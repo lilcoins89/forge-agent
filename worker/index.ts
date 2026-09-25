@@ -2,6 +2,9 @@ export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
   GROQ_API_KEY?: string;
+  REDIS_URL?: string;
+  REDIS_TOKEN?: string;
+  DATABASE_URL?: string;
   ALLOWED_ORIGINS?: string;
   ARTIFACTS?: R2Bucket;
 }
@@ -23,13 +26,42 @@ function headers(request: Request, env: Env): Headers {
 function json(request: Request, env: Env, body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: headers(request, env) }); }
 function projectKey(projectId: string, path: string) { return `projects/${projectId}/files/${path}`; }
 
+async function checkRedis(env: Env): Promise<{ configured: boolean; ok: boolean; error?: string }> {
+  if (!env.REDIS_URL) return { configured: false, ok: false, error: "REDIS_URL is not configured" };
+  try {
+    const redisUrl = new URL(env.REDIS_URL);
+    if (redisUrl.protocol !== "https:") return { configured: true, ok: false, error: "Upstash REST URL must use https" };
+    const token = env.REDIS_TOKEN || decodeURIComponent(redisUrl.password);
+    if (!token) return { configured: true, ok: false, error: "REDIS_TOKEN is not configured" };
+    redisUrl.username = "";
+    redisUrl.password = "";
+    const response = await fetch(redisUrl, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(["PING"]) });
+    if (!response.ok) return { configured: true, ok: false, error: `Redis returned HTTP ${response.status}` };
+    const result = await response.json() as { result?: string; error?: string };
+    return result.result === "PONG" ? { configured: true, ok: true } : { configured: true, ok: false, error: result.error || "Redis did not return PONG" };
+  } catch { return { configured: true, ok: false, error: "Redis URL is invalid or unreachable" }; }
+}
+
+async function checkGroq(env: Env): Promise<{ configured: boolean; ok: boolean; model: string; error?: string }> {
+  if (!env.GROQ_API_KEY) return { configured: false, ok: false, model: MODEL, error: "GROQ_API_KEY is not configured" };
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/models", { headers: { authorization: `Bearer ${env.GROQ_API_KEY}` } });
+    if (!response.ok) return { configured: true, ok: false, model: MODEL, error: response.status === 401 ? "Groq API key was rejected" : `Groq returned HTTP ${response.status}` };
+    return { configured: true, ok: true, model: MODEL };
+  } catch { return { configured: true, ok: false, model: MODEL, error: "Groq is unreachable" }; }
+}
+
 const tools = [{ type: "function", function: { name: "list_files", description: "List files in the current workspace", parameters: { type: "object", properties: { prefix: { type: "string" } } } } }, { type: "function", function: { name: "read_file", description: "Read a file before changing it", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }, { type: "function", function: { name: "write_file", description: "Create or replace a file after explaining the change", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } }, { type: "function", function: { name: "delete_file", description: "Delete a file only after explicit user confirmation", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }];
 
 export default { async fetch(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(request, env) });
   const url = new URL(request.url);
   try {
-    if (url.pathname === "/api/health") return json(request, env, { ok: true, provider: "groq", model: MODEL, environment: env.ENVIRONMENT, storage: { d1: !!env.DB, r2: !!env.ARTIFACTS } });
+    if (url.pathname === "/api/health") return json(request, env, { ok: true, provider: "groq", model: MODEL, environment: env.ENVIRONMENT, storage: { d1: !!env.DB, r2: !!env.ARTIFACTS, neon: !!env.DATABASE_URL, redis: !!env.REDIS_URL } });
+    if (url.pathname === "/api/provider-status" && request.method === "GET") {
+      const [groq, redis] = await Promise.all([checkGroq(env), checkRedis(env)]);
+      return json(request, env, { ok: groq.ok && (!redis.configured || redis.ok), groq, redis, neon: { configured: !!env.DATABASE_URL, note: "Neon credentials are available to the execution service" } });
+    }
     if (url.pathname === "/api/projects" && request.method === "GET") { const result = await env.DB.prepare("SELECT id, name, repository, updated_at FROM projects ORDER BY updated_at DESC LIMIT 50").all(); return json(request, env, result.results); }
     if (url.pathname === "/api/projects" && request.method === "POST") { const body = await request.json() as { name?: unknown; ownerId?: unknown; repository?: unknown }; if (typeof body.name !== "string" || body.name.trim().length < 1 || body.name.trim().length > 80) return json(request, env, { error: "Project name must be between 1 and 80 characters" }, 400); const projectId = id(); const name = body.name.trim(); await env.DB.prepare("INSERT INTO projects (id, owner_id, name, repository) VALUES (?, ?, ?, ?)").bind(projectId, typeof body.ownerId === "string" ? body.ownerId : "local", name, typeof body.repository === "string" ? body.repository : null).run(); return json(request, env, { id: projectId, name }, 201); }
     const fileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/files(?:\/(.*))?$/);

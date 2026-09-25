@@ -7,6 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 ENVIRONMENT = "production"
 # Set this to the deployed app origin, comma-separated for multiple origins.
 ALLOWED_ORIGINS = ""
+# Set secrets with `wrangler secret put GROQ_API_KEY`, `REDIS_URL`, `REDIS_TOKEN`, and `DATABASE_URL`.
+# Secrets are intentionally not stored in this file.
 
 [[r2_buckets]]
 binding = "ARTIFACTS"
