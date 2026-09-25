@@ -1,26 +1,38 @@
 # Forge Agent
 
-Forge is a responsive, installable AI coding workspace for planning changes, editing project files, previewing work, and shipping deployments. The UI is designed for desktop and mobile/PWA use.
+Forge is a responsive AI coding workspace powered by Groq and designed for Cloudflare Workers. It combines an agent chat, project explorer, editor, preview canvas, terminal output, activity state, settings, PWA shell, D1 persistence, and optional R2 storage.
 
 ## Local development
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
-Run the Cloudflare API locally with `npm run worker:dev`. The frontend build is validated by `npm run build`.
+The frontend runs on Vite. The Worker API can be run separately with `pnpm worker:dev` and exposes `/api/health`, `/api/projects`, and `/api/agent`.
 
-## Cloudflare setup
+## Configuration
 
-1. Create a D1 database: `npx wrangler d1 create forge-agent`.
-2. Put the returned database ID in `wrangler.toml`.
-3. Apply the schema: `npm run db:migrate`.
-4. Deploy: `npm run worker:deploy`.
-5. For GitHub Actions, add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets.
+Copy `.env.example` into your secret manager. Keep `GROQ_API_KEY` server-side; it is read only by the Worker. Configure the D1 database id in `wrangler.toml`, then apply migrations with `pnpm db:migrate`.
 
-The worker currently exposes `/api/health` and project CRUD endpoints. AI provider credentials should be stored as Worker secrets, never in the browser bundle. The chat UI is ready for the agent provider/tool loop to be connected to these endpoints.
+Required production resources:
 
-## Inspired by OpenChamber
+- Cloudflare Workers for the API/runtime
+- D1 database bound as `DB`
+- R2 bucket bound as `ARTIFACTS` when storing project objects
+- `GROQ_API_KEY` as a Worker secret
 
-The workspace follows the same agentic development direction as [OpenChamber](https://github.com/openchamber/openchamber), while remaining an independent implementation.
+## Checks
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+```
+
+GitHub Actions runs the build and Cloudflare deployment workflow. Set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets. GitHub and deployment actions are intentionally represented as explicit configuration surfaces until credentials are connected; the UI never reports an unperformed operation as successful.
+
+## Security model
+
+Workspace paths are validated against traversal and control characters at the Worker boundary. D1 records are related with foreign keys and cascading deletes. API credentials never enter client bundles, and errors returned to clients are sanitized. Add an authenticated identity layer and rate limiting before exposing project mutations publicly.
