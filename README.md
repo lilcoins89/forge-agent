@@ -1,41 +1,26 @@
-# Anvil
+# Forge Agent
 
-A coding agent with a chatbox that writes real website files, previews them live, and ships the project to GitHub.
+Forge is a responsive, installable AI coding workspace for planning changes, editing project files, previewing work, and shipping deployments. The UI is designed for desktop and mobile/PWA use.
 
-Inspired by the tool-loop style of [OpenAI Codex](https://github.com/openai/codex) and the ship-to-GitHub workflow of [Stakpak](https://github.com/stakpak/agent) — implemented from scratch, not installed.
-
-## What it does
-
-- Chat with Anvil to describe a site
-- The agent writes `index.html`, CSS, JS, and other files in a virtual workspace
-- Live preview updates as files change
-- Edit any file by hand
-- Push the whole workspace to a GitHub repository (creates the repo if needed)
-
-## Setup
+## Local development
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the app, then **Settings**:
+Run the Cloudflare API locally with `npm run worker:dev`. The frontend build is validated by `npm run build`.
 
-1. **xAI API key** — from [console.x.ai](https://console.x.ai) (stored in `localStorage` as `anvil.xai.key`, or set `VITE_XAI_API_KEY`)
-2. **GitHub token** — classic or fine-grained PAT with `repo` scope
+## Cloudflare setup
 
-## GitHub shipping
+1. Create a D1 database: `npx wrangler d1 create forge-agent`.
+2. Put the returned database ID in `wrangler.toml`.
+3. Apply the schema: `npm run db:migrate`.
+4. Deploy: `npm run worker:deploy`.
+5. For GitHub Actions, add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets.
 
-Use **Ship** in the top bar, or ask the agent to push. Anvil can create the repository and commit every workspace file via the Git Data API.
+The worker currently exposes `/api/health` and project CRUD endpoints. AI provider credentials should be stored as Worker secrets, never in the browser bundle. The chat UI is ready for the agent provider/tool loop to be connected to these endpoints.
 
-## Stack
+## Inspired by OpenChamber
 
-- React 19 + Vite + TypeScript
-- Tailwind CSS v4
-- Zustand (workspace + chat persistence)
-- xAI Chat Completions with tool calling (`grok-4.5`)
-- GitHub REST + Git Data API for create/push
-
-## License
-
-MIT
+The workspace follows the same agentic development direction as [OpenChamber](https://github.com/openchamber/openchamber), while remaining an independent implementation.
