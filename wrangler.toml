@@ -5,6 +5,12 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
+# Set this to the deployed app origin, comma-separated for multiple origins.
+ALLOWED_ORIGINS = ""
+
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "forge-agent-artifacts"
 
 [[d1_databases]]
 binding = "DB"
