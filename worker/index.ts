@@ -32,9 +32,12 @@ function json(request: Request, env: Env, body: unknown, status = 200) { return 
 function projectKey(projectId: string, path: string) { return `projects/${projectId}/files/${path}`; }
 
 function redisConfig(env: Env): { url?: string; token?: string } {
+  // Prefer the Upstash REST variables injected by the integration. REDIS_URL is
+  // also supported for self-managed deployments, but may be a redis:// URL that
+  // Cloudflare Workers cannot contact directly.
   return {
-    url: env.REDIS_URL || env.UPSTASH_FOR_REDIS_KV_REST_API_URL || env.UPSTASH_FOR_REDIS_KV_URL || env.UPSTASH_FOR_REDIS_REDIS_URL,
-    token: env.REDIS_TOKEN || env.UPSTASH_FOR_REDIS_KV_REST_API_TOKEN || env.UPSTASH_FOR_REDIS_KV_REST_API_READ_ONLY_TOKEN,
+    url: env.UPSTASH_FOR_REDIS_KV_REST_API_URL || env.UPSTASH_FOR_REDIS_KV_URL || env.REDIS_URL || env.UPSTASH_FOR_REDIS_REDIS_URL,
+    token: env.UPSTASH_FOR_REDIS_KV_REST_API_TOKEN || env.REDIS_TOKEN || env.UPSTASH_FOR_REDIS_KV_REST_API_READ_ONLY_TOKEN,
   };
 }
 
