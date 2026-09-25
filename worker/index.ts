@@ -1,3 +1,5 @@
+import { neon } from "@neondatabase/serverless";
+
 export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
@@ -19,6 +21,20 @@ type FileBody = { path?: unknown; content?: unknown };
 
 const MODEL = "openai/gpt-oss-120b";
 const id = () => crypto.randomUUID();
+const postJson = async (url: string, token: string, command: unknown[]) => fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(command) });
+async function rateLimit(request: Request, env: Env): Promise<{ allowed: boolean; error?: string }> {
+  const config = redisConfig(env);
+  if (!config.url || !config.token) return { allowed: true };
+  try {
+    const key = `forge:agent:${request.headers.get("CF-Connecting-IP") || "anonymous"}`;
+    const response = await postJson(config.url, config.token, ["INCR", key]);
+    if (!response.ok) return { allowed: true };
+    const result = await response.json() as { result?: number };
+    const count = Number(result.result || 0);
+    if (count === 1) await postJson(config.url, config.token, ["EXPIRE", key, "60"]);
+    return count > 30 ? { allowed: false, error: "Too many agent requests. Please wait a minute and try again." } : { allowed: true };
+  } catch { return { allowed: true }; }
+}
 const safePath = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 240 && !value.startsWith("/") && !value.split("/").includes("..") && !/[\\\0]/.test(value);
 
 function headers(request: Request, env: Env): Headers {
@@ -58,6 +74,15 @@ async function checkRedis(env: Env): Promise<{ configured: boolean; ok: boolean;
   } catch { return { configured: true, ok: false, error: "Redis URL is invalid or unreachable" }; }
 }
 
+async function checkNeon(env: Env): Promise<{ configured: boolean; ok: boolean; error?: string }> {
+  if (!env.DATABASE_URL) return { configured: false, ok: false, error: "DATABASE_URL is not configured" };
+  try {
+    const sql = neon(env.DATABASE_URL);
+    await sql`select 1 as ok`;
+    return { configured: true, ok: true };
+  } catch { return { configured: true, ok: false, error: "Neon database is unreachable" }; }
+}
+
 async function checkGroq(env: Env): Promise<{ configured: boolean; ok: boolean; model: string; error?: string }> {
   if (!env.GROQ_API_KEY) return { configured: false, ok: false, model: MODEL, error: "GROQ_API_KEY is not configured" };
   try {
@@ -73,16 +98,16 @@ export default { async fetch(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(request, env) });
   const url = new URL(request.url);
   try {
-    if (url.pathname === "/api/health") return json(request, env, { ok: true, provider: "groq", model: MODEL, environment: env.ENVIRONMENT, storage: { d1: !!env.DB, r2: !!env.ARTIFACTS, neon: !!env.DATABASE_URL, redis: !!env.REDIS_URL } });
+    if (url.pathname === "/api/health") { const [groq, redis, neonStatus] = await Promise.all([checkGroq(env), checkRedis(env), checkNeon(env)]); return json(request, env, { ok: groq.ok && neonStatus.ok && (!redis.configured || redis.ok), provider: "groq", model: MODEL, environment: env.ENVIRONMENT, services: { groq, redis, neon: neonStatus, d1: !!env.DB, r2: !!env.ARTIFACTS } }); }
     if (url.pathname === "/api/provider-status" && request.method === "GET") {
-      const [groq, redis] = await Promise.all([checkGroq(env), checkRedis(env)]);
-      return json(request, env, { ok: groq.ok && (!redis.configured || redis.ok), groq, redis, neon: { configured: !!env.DATABASE_URL, note: "Neon credentials are available to the execution service" } });
+      const [groq, redis, neonStatus] = await Promise.all([checkGroq(env), checkRedis(env), checkNeon(env)]);
+      return json(request, env, { ok: groq.ok && neonStatus.ok && (!redis.configured || redis.ok), groq, redis, neon: neonStatus });
     }
     if (url.pathname === "/api/projects" && request.method === "GET") { const result = await env.DB.prepare("SELECT id, name, repository, updated_at FROM projects ORDER BY updated_at DESC LIMIT 50").all(); return json(request, env, result.results); }
     if (url.pathname === "/api/projects" && request.method === "POST") { const body = await request.json() as { name?: unknown; ownerId?: unknown; repository?: unknown }; if (typeof body.name !== "string" || body.name.trim().length < 1 || body.name.trim().length > 80) return json(request, env, { error: "Project name must be between 1 and 80 characters" }, 400); const projectId = id(); const name = body.name.trim(); await env.DB.prepare("INSERT INTO projects (id, owner_id, name, repository) VALUES (?, ?, ?, ?)").bind(projectId, typeof body.ownerId === "string" ? body.ownerId : "local", name, typeof body.repository === "string" ? body.repository : null).run(); return json(request, env, { id: projectId, name }, 201); }
     const fileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/files(?:\/(.*))?$/);
     if (fileMatch) { const projectId = decodeURIComponent(fileMatch[1]); const path = fileMatch[2] ? decodeURIComponent(fileMatch[2]) : ""; if (path && !safePath(path)) return json(request, env, { error: "Invalid file path" }, 400); if (!env.ARTIFACTS) return json(request, env, { error: "R2 file storage is not configured" }, 503); if (request.method === "GET" && path) { const object = await env.ARTIFACTS.get(projectKey(projectId, path)); if (!object) return json(request, env, { error: "File not found" }, 404); return new Response(object.body, { headers: new Headers({ "content-type": object.httpMetadata?.contentType || "text/plain; charset=utf-8", "cache-control": "private, no-store" }) }); } if (request.method === "PUT" && path) { const body = await request.json() as FileBody; if (typeof body.content !== "string" || body.content.length > 2_000_000) return json(request, env, { error: "File content must be text under 2 MB" }, 400); await env.ARTIFACTS.put(projectKey(projectId, path), body.content, { httpMetadata: { contentType: "text/plain; charset=utf-8" } }); return json(request, env, { ok: true, path }); } if (request.method === "DELETE" && path) { await env.ARTIFACTS.delete(projectKey(projectId, path)); return json(request, env, { ok: true }); } return json(request, env, { error: "File path is required" }, 400); }
-    if (url.pathname === "/api/agent" && request.method === "POST") { if (!env.GROQ_API_KEY) return json(request, env, { error: "Groq is not configured. Add GROQ_API_KEY as a Worker secret." }, 503); const body = await request.json() as { messages?: ChatMessage[]; workspace?: Record<string, string> }; if (!Array.isArray(body.messages) || body.messages.length > 40) return json(request, env, { error: "Invalid conversation" }, 400); const workspace = body.workspace && typeof body.workspace === "object" ? body.workspace : {}; const system = `You are Forge, a senior autonomous coding agent. Inspect before editing, preserve architecture, explain changes, and never delete files without explicit confirmation. Workspace files: ${Object.keys(workspace).join(", ") || "none"}.`; const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` }, body: JSON.stringify({ model: MODEL, temperature: 0.15, max_tokens: 4096, stream: false, messages: [{ role: "system", content: system }, ...body.messages], tools, tool_choice: "auto" }) }); const result = await upstream.json() as { choices?: Array<{ message?: ChatMessage }> }; if (!upstream.ok) return json(request, env, { error: upstream.status === 429 ? "Groq is rate limited. Try again shortly." : "Groq request failed" }, upstream.status >= 500 ? 502 : upstream.status); const message = result.choices?.[0]?.message; if (!message) return json(request, env, { error: "Groq returned no assistant message" }, 502); return json(request, env, { provider: "groq", model: MODEL, message }); }
+    if (url.pathname === "/api/agent" && request.method === "POST") { const limit = await rateLimit(request, env); if (!limit.allowed) return json(request, env, { error: limit.error }, 429); if (!env.GROQ_API_KEY) return json(request, env, { error: "Groq is not configured. Add GROQ_API_KEY as a Worker secret." }, 503); const body = await request.json() as { messages?: ChatMessage[]; workspace?: Record<string, string> }; if (!Array.isArray(body.messages) || body.messages.length > 40) return json(request, env, { error: "Invalid conversation" }, 400); const workspace = body.workspace && typeof body.workspace === "object" ? body.workspace : {}; const system = `You are Forge, a senior autonomous coding agent. Inspect before editing, preserve architecture, explain changes, and never delete files without explicit confirmation. Workspace files: ${Object.keys(workspace).join(", ") || "none"}.`; const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` }, body: JSON.stringify({ model: MODEL, temperature: 0.15, max_tokens: 4096, stream: false, messages: [{ role: "system", content: system }, ...body.messages], tools, tool_choice: "auto" }) }); const result = await upstream.json() as { choices?: Array<{ message?: ChatMessage }> }; if (!upstream.ok) return json(request, env, { error: upstream.status === 429 ? "Groq is rate limited. Try again shortly." : "Groq request failed" }, upstream.status >= 500 ? 502 : upstream.status); const message = result.choices?.[0]?.message; if (!message) return json(request, env, { error: "Groq returned no assistant message" }, 502); return json(request, env, { provider: "groq", model: MODEL, message }); }
     return json(request, env, { error: "Not found" }, 404);
   } catch (error) { console.error("[forge-worker] request failed", error); return json(request, env, { error: "The request could not be completed safely" }, 500); }
 } }; 
