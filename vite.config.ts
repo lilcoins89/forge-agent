@@ -27,7 +27,7 @@ function localAgentApi(env: Record<string, string>): Plugin {
           const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
-            body: JSON.stringify({ model: MODEL, temperature: 0.2, max_tokens: 4096, stream: false, tools: agentTools, tool_choice: "auto", messages: [{ role: "system", content: `You are Forge, a friendly senior coding partner. Answer general questions conversationally, help research topics clearly, and help plan and implement coding tasks. Inspect the workspace before proposing edits, preserve existing architecture, explain changes, and never claim to have run a command or changed a file unless a tool result proves it. Workspace files: ${Object.keys(workspace).join(", ") || "none"}.` }, ...body.messages] }),
+            body: JSON.stringify({ model: MODEL, temperature: 0.2, max_completion_tokens: 2048, reasoning_effort: "low", stream: false, tools: agentTools, tool_choice: "auto", messages: [{ role: "system", content: `You are Forge, a friendly senior coding partner. Answer general questions conversationally, help research topics clearly, and help plan and implement coding tasks. Inspect the workspace before proposing edits, preserve existing architecture, explain changes, and never claim to have run a command or changed a file unless a tool result proves it. Workspace files: ${Object.keys(workspace).join(", ") || "none"}.` }, ...body.messages] }),
           });
           const text = await upstream.text();
           response.statusCode = upstream.ok ? 200 : upstream.status === 429 ? 429 : 502;
