@@ -21,6 +21,13 @@ export function executeAgentTool(name: string, rawArguments: string, workspace: 
 }
 export interface AgentResponse { message?: AgentMessage; error?: string; provider: AgentProvider; model: string; }
 
+export function displayAgentValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  if (value === null || value === undefined) return "";
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
 function agentEndpoint() {
   const configured = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL;
   if (!configured) return "/api/agent";
@@ -56,7 +63,8 @@ export async function runAgent(request: AgentRequest): Promise<AgentResponse> {
     throw new Error("Could not reach the agent API. Start the Cloudflare Worker or check VITE_API_BASE_URL.");
   }
   const data = await readAgentResponse(response);
-  if (!response.ok) throw new Error(data.error || "The agent request failed");
+  if (!response.ok) throw new Error(displayAgentValue(data.error) || "The agent request failed");
   if (!data.message) throw new Error("The agent API returned no assistant message.");
+  data.message.content = displayAgentValue(data.message.content);
   return data;
 }

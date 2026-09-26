@@ -23,7 +23,7 @@ export function useAgent() {
         const toolResults = assistant.tool_calls.map((call) => ({ role: "tool" as const, tool_call_id: call.id, name: call.function.name, content: JSON.stringify(executeAgentTool(call.function.name, call.function.arguments, workingWorkspace)) }));
         conversation = [...conversation, ...toolResults];
       }
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Agent request failed"); }
+    } catch (cause) { setError(typeof cause === "string" ? cause : cause instanceof Error ? cause.message : JSON.stringify(cause)); }
     finally { setBusy(false); }
   };
   return { messages: transcript, busy, error, send };
